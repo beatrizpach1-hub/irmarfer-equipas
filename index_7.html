@@ -95,6 +95,7 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
 .person-chip:hover{box-shadow:0 2px 6px rgba(0,0,0,0.1)}
 .person-chip:active{cursor:grabbing}
 .person-chip.dragging{opacity:0.35}
+.person-chip:hover .chip-actions{display:flex!important}
 .person-chip.conflict{background:#FFF0E8;border-color:#F5A06A;opacity:0.8}
 .person-chip.conflict .chip-name{text-decoration:line-through;text-decoration-color:#E8590A;color:var(--text3)}
 .conflict-badge{font-size:8px;font-weight:600;background:#E8590A;color:#fff;border-radius:3px;padding:1px 3px;flex-shrink:0;line-height:1.4;pointer-events:none}
@@ -270,15 +271,31 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
 <!-- Modal Pessoa -->
 <div class="modal-overlay" id="modal-person">
 <div class="modal">
-  <div class="modal-title">Adicionar pessoa</div>
+  <div class="modal-title" id="modal-person-title">Adicionar pessoa</div>
   <div class="form-row">
     <div class="form-group"><label>Número</label><input id="per-num" placeholder="198" type="number"/></div>
     <div class="form-group"><label>Cargo / Patente</label><select id="per-rank"></select></div>
   </div>
   <div class="form-group"><label>Nome</label><input id="per-name" placeholder="ex: Luís Ribeiro"/></div>
+  <div class="form-row">
+    <div class="form-group">
+      <label>Cor do chip</label>
+      <div style="display:flex;align-items:center;gap:8px">
+        <input type="color" id="per-color" value="#1e40af" style="width:40px;height:34px;padding:2px;border:0.5px solid var(--border2);border-radius:4px;cursor:pointer"/>
+        <span style="font-size:11px;color:var(--text3)">Cor de fundo do número</span>
+      </div>
+    </div>
+    <div class="form-group">
+      <label>Cor do texto</label>
+      <div style="display:flex;align-items:center;gap:8px">
+        <input type="color" id="per-textcolor" value="#ffffff" style="width:40px;height:34px;padding:2px;border:0.5px solid var(--border2);border-radius:4px;cursor:pointer"/>
+        <span style="font-size:11px;color:var(--text3)">Cor do texto/badge</span>
+      </div>
+    </div>
+  </div>
   <div class="modal-btns">
     <button class="btn-cancel" onclick="closeModals()">Cancelar</button>
-    <button class="btn-save" onclick="savePerson()">Adicionar</button>
+    <button class="btn-save" id="modal-person-save" onclick="savePerson()">Adicionar</button>
   </div>
 </div>
 </div>
@@ -351,7 +368,7 @@ function getRank(id) { return ranks.find(r=>r.id===id) || {id,name:id,abbr:id.to
 function rankOrder(id) { const r=ranks.find(x=>x.id===id); return r?r.order:99; }
 
 let state = { people:[], projects:[], members:[] };
-let currentFilter='todos', searchTerm='', draggingId=null, currentView='projects', editingProjectId=null;
+let currentFilter='todos', searchTerm='', draggingId=null, currentView='projects', editingProjectId=null, editingPersonId=null;
 let currentWeek = getWeekStart(new Date());
 
 // ---- SUPABASE ----
@@ -480,8 +497,39 @@ function openProjectModal(projId){
   }
   document.getElementById('modal-project').classList.add('open');
 }
-function openPersonModal(){ updateRankSelects(); document.getElementById('modal-person').classList.add('open'); }
-function closeModals(){ document.querySelectorAll('.modal-overlay').forEach(m=>m.classList.remove('open')); editingProjectId=null; }
+function openPersonModal(personId){
+  editingPersonId = personId || null;
+  const isEdit = !!personId;
+  updateRankSelects();
+  document.getElementById('modal-person-title').textContent = isEdit ? 'Editar pessoa' : 'Adicionar pessoa';
+  document.getElementById('modal-person-save').textContent = isEdit ? 'Guardar' : 'Adicionar';
+  if(isEdit){
+    const p = getPerson(personId);
+    if(p){
+      document.getElementById('per-num').value = p.num || '';
+      document.getElementById('per-name').value = p.name || '';
+      document.getElementById('per-rank').value = p.rank || '';
+      document.getElementById('per-color').value = p.color || '#1e40af';
+      document.getElementById('per-textcolor').value = p.textcolor || '#ffffff';
+    }
+  } else {
+    document.getElementById('per-num').value = '';
+    document.getElementById('per-name').value = '';
+    document.getElementById('per-color').value = '#1e40af';
+    document.getElementById('per-textcolor').value = '#ffffff';
+  }
+  document.getElementById('modal-person').classList.add('open');
+}
+
+async function deletePerson(personId){
+  if(!confirm('Remover esta pessoa?')) return;
+  setSyncing(true);
+  await sb.from('project_members').delete().eq('person_id', personId);
+  await sb.from('people').delete().eq('id', personId);
+  await loadAll();
+  showToast('Pessoa removida');
+}
+function closeModals(){ document.querySelectorAll('.modal-overlay').forEach(m=>m.classList.remove('open')); editingProjectId=null; editingPersonId=null; }
 
 async function saveProject(){
   const name=document.getElementById('p-name').value.trim();
@@ -503,12 +551,26 @@ async function saveProject(){
 async function savePerson(){
   const name=document.getElementById('per-name').value.trim();
   if(!name){showToast('Insere o nome');return;}
-  const p={id:'p-'+Date.now(),num:document.getElementById('per-num').value.trim()||null,name,rank:document.getElementById('per-rank').value};
+  const data={
+    num:document.getElementById('per-num').value.trim()||null,
+    name,
+    rank:document.getElementById('per-rank').value,
+    color:document.getElementById('per-color').value,
+    textcolor:document.getElementById('per-textcolor').value,
+  };
   setSyncing(true);
-  await sb.from('people').insert(p);
+  if(editingPersonId){
+    await sb.from('people').update(data).eq('id', editingPersonId);
+    showToast('Pessoa atualizada!');
+  } else {
+    const p={id:'p-'+Date.now(), ...data};
+    await sb.from('people').insert(p);
+    showToast('Pessoa adicionada!');
+  }
   closeModals();
   document.getElementById('per-num').value=''; document.getElementById('per-name').value='';
-  await loadAll(); showToast('Pessoa adicionada!');
+  editingPersonId=null;
+  await loadAll();
 }
 
 async function deleteProject(projId){
@@ -535,16 +597,23 @@ function chipHTML(personId, ctx, excludeProjId) {
   const p=getPerson(personId); if(!p)return'';
   if(searchTerm&&!p.name.toLowerCase().includes(searchTerm)&&!(p.num||'').includes(searchTerm))return'';
   const rank=getRank(p.rank);
+  // Use person's custom color if set, else rank default
+  const bg = p.color || rank.bg;
+  const tc = p.textcolor || rank.color;
   const conflict=getPersonConflict(personId,excludeProjId||'__none__');
   const conflictClass=conflict?' conflict':'';
   const conflictBadge=conflict?`<span class="conflict-badge" title="${conflict.projName} · ${conflict.label} ${conflict.dateStr}">!</span>`:'';
   const tooltip=conflict?`title="Ocupado: ${conflict.projName} · ${conflict.label} ${conflict.dateStr}"`:'';
   return`<div class="person-chip${conflictClass}" draggable="true" id="chip-${personId}-${ctx}" data-pid="${personId}"
     ondragstart="onDragStart(event,'${personId}')" ondragend="onDragEnd(event)" ${tooltip}>
-    <div class="avatar" style="background:${rank.bg};color:${rank.color}">${p.num||'?'}</div>
+    <div class="avatar" style="background:${bg};color:${tc}">${p.num||'?'}</div>
     <span class="chip-name">${p.name}</span>
-    <span class="chip-rank" style="background:${rank.bg};color:${rank.color}">${rank.abbr}</span>
+    <span class="chip-rank" style="background:${bg};color:${tc}">${rank.abbr}</span>
     ${conflictBadge}
+    <span class="chip-actions" style="display:none;gap:2px;margin-left:2px">
+      <button onclick="event.stopPropagation();openPersonModal('${personId}')" style="background:none;border:none;cursor:pointer;padding:0 2px;font-size:10px;color:${tc};opacity:0.7" title="Editar">✏</button>
+      <button onclick="event.stopPropagation();deletePerson('${personId}')" style="background:none;border:none;cursor:pointer;padding:0 2px;font-size:10px;color:#c0392b;opacity:0.7" title="Remover">✕</button>
+    </span>
   </div>`;
 }
 
