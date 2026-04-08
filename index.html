@@ -811,17 +811,36 @@ async function onDrop(e,projId,phase){
   const pid=e.dataTransfer.getData('text/plain')||draggingId;
   if(!pid){draggingId=null;return;}
   draggingId=null;
-  // Check for date conflict before allowing drop
-  if(projId!=='pool') {
-    const conflict = getPersonConflict(pid, projId, phase);
-    if(conflict) {
-      showToast(`⚠️ Conflito de datas! ${getPerson(pid)?.name} está em "${conflict.projName}" (${conflict.label} ${conflict.dateStr})`);
-      return;
-    }
+
+  if(projId==='pool'){
+    // Remove ALL assignments for this person
+    setSyncing(true);
+    await sb.from('project_members').delete().eq('person_id',pid);
+    await loadAll();
+    return;
   }
+
+  // Check for date conflict before allowing drop
+  const conflict = getPersonConflict(pid, projId, phase);
+  if(conflict) {
+    showToast(`⚠️ Conflito de datas! ${getPerson(pid)?.name} está em "${conflict.projName}" (${conflict.label} ${conflict.dateStr})`);
+    return;
+  }
+
   setSyncing(true);
-  await sb.from('project_members').delete().eq('person_id',pid);
-  if(projId!=='pool'){ await sb.from('project_members').insert({project_id:projId,person_id:pid,phase}); }
+  // Only remove existing assignment for this exact project+phase combo (if any)
+  // This allows the same person to be in montagem AND desmontagem of the same project
+  // or in different projects with different dates
+  const existing = state.members.find(m=>m.person_id===pid && m.project_id===projId && m.phase===phase);
+  if(!existing){
+    // Also check if person is already in this project in the same phase from another source
+    await sb.from('project_members')
+      .delete()
+      .eq('person_id', pid)
+      .eq('project_id', projId)
+      .eq('phase', phase);
+    await sb.from('project_members').insert({project_id:projId, person_id:pid, phase});
+  }
   await loadAll();
 }
 
