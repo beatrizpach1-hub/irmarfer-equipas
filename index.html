@@ -581,15 +581,51 @@ async function deleteProject(projId){
 }
 
 // ---- CONFLICT DETECTION ----
-function getPersonConflict(personId, excludeProjId) {
-  const assigned = state.members.filter(m=>m.person_id===personId&&m.project_id!==excludeProjId).map(m=>({proj:state.projects.find(p=>p.id===m.project_id),phase:m.phase})).filter(x=>x.proj);
+function getMemberRange(proj, phase) {
+  if(phase==='montagem') return [parseD(proj.m_start), parseD(proj.m_end||proj.m_start)];
+  return [parseD(proj.d_start), parseD(proj.d_end||proj.d_start)];
+}
+function rangesOverlap(s1,e1,s2,e2) {
+  if(!s1||!s2) return false;
+  const end1=e1||s1, end2=e2||s2;
+  return s1.getTime()<=end2.getTime() && s2.getTime()<=end1.getTime();
+}
+function getPersonConflict(personId, excludeProjId, checkPhase) {
+  const assigned = state.members
+    .filter(m=>m.person_id===personId && m.project_id!==excludeProjId)
+    .map(m=>({proj:state.projects.find(p=>p.id===m.project_id), phase:m.phase}))
+    .filter(x=>x.proj);
   if(!assigned.length) return null;
-  const c=assigned[0]; const proj=c.proj;
-  const start=c.phase==='montagem'?proj.m_start:proj.d_start;
-  const end=c.phase==='montagem'?proj.m_end:proj.d_end;
-  const label=c.phase==='montagem'?'Mont.':'Desm.';
-  const dateStr=start?fmtDate(start)+(end&&end!==start?' → '+fmtDate(end):''):'?';
-  return{projName:proj.name,dateStr,label};
+
+  if(excludeProjId && checkPhase) {
+    const targetProj = state.projects.find(p=>p.id===excludeProjId);
+    if(targetProj) {
+      const [ts,te] = getMemberRange(targetProj, checkPhase);
+      for(const a of assigned) {
+        const [as2,ae2] = getMemberRange(a.proj, a.phase);
+        if(rangesOverlap(ts,te,as2,ae2)) {
+          const label = a.phase==='montagem'?'Mont.':'Desm.';
+          const ds = a.phase==='montagem'?a.proj.m_start:a.proj.d_start;
+          const de = a.phase==='montagem'?a.proj.m_end:a.proj.d_end;
+          const dateStr = ds?fmtDate(ds)+(de&&de!==ds?' → '+fmtDate(de):''):'?';
+          return{projName:a.proj.name, dateStr, label};
+        }
+      }
+      return null;
+    }
+  }
+
+  for(const a of assigned) {
+    const [as2,ae2] = getMemberRange(a.proj, a.phase);
+    if(as2) {
+      const label = a.phase==='montagem'?'Mont.':'Desm.';
+      const ds = a.phase==='montagem'?a.proj.m_start:a.proj.d_start;
+      const de = a.phase==='montagem'?a.proj.m_end:a.proj.d_end;
+      const dateStr = ds?fmtDate(ds)+(de&&de!==ds?' → '+fmtDate(de):''):'?';
+      return{projName:a.proj.name, dateStr, label};
+    }
+  }
+  return null;
 }
 
 // ---- CHIPS ----
@@ -600,7 +636,9 @@ function chipHTML(personId, ctx, excludeProjId) {
   // Use person's custom color if set, else rank default
   const bg = p.color || rank.bg;
   const tc = p.textcolor || rank.color;
-  const conflict=getPersonConflict(personId,excludeProjId||'__none__');
+  // Extract phase from ctx: 'm-projId' = montagem, 'd-projId' = desmontagem
+  const ctxPhase = ctx.startsWith('m-')?'montagem':ctx.startsWith('d-')?'desmontagem':null;
+  const conflict=getPersonConflict(personId,excludeProjId||'__none__',ctxPhase);
   const conflictClass=conflict?' conflict':'';
   const conflictBadge=conflict?`<span class="conflict-badge" title="${conflict.projName} · ${conflict.label} ${conflict.dateStr}">!</span>`:'';
   const tooltip=conflict?`title="Ocupado: ${conflict.projName} · ${conflict.label} ${conflict.dateStr}"`:'';
@@ -773,6 +811,14 @@ async function onDrop(e,projId,phase){
   const pid=e.dataTransfer.getData('text/plain')||draggingId;
   if(!pid){draggingId=null;return;}
   draggingId=null;
+  // Check for date conflict before allowing drop
+  if(projId!=='pool') {
+    const conflict = getPersonConflict(pid, projId, phase);
+    if(conflict) {
+      showToast(`⚠️ Conflito de datas! ${getPerson(pid)?.name} está em "${conflict.projName}" (${conflict.label} ${conflict.dateStr})`);
+      return;
+    }
+  }
   setSyncing(true);
   await sb.from('project_members').delete().eq('person_id',pid);
   if(projId!=='pool'){ await sb.from('project_members').insert({project_id:projId,person_id:pid,phase}); }
